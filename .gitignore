@@ -1,0 +1,21 @@
+# Environment & secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Database
+*.db
+
+# Extracted documents (contain sensitive legal text)
+extracted_markdowns/
+
+# IDE
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db

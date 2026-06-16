@@ -1,0 +1,11 @@
+streamlit
+openai
+python-dotenv
+pydantic
+pymupdf
+Pillow
+markitdown[pdf]
+fpdf2
+pandas
+markdown
+
