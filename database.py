@@ -26,6 +26,21 @@ def init_db():
                       verdict TEXT,
                       per_field_json TEXT,
                       afs_filename TEXT)''')
+        conn.execute('''CREATE TABLE IF NOT EXISTS full_verifications
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      date TEXT,
+                      unit_no TEXT,
+                      buyer_name TEXT,
+                      project_name TEXT,
+                      afs_date TEXT,
+                      kyc_status TEXT,
+                      sheet_verdict TEXT,
+                      overall_verdict TEXT,
+                      kyc_report_text TEXT,
+                      sheet_per_field_json TEXT,
+                      afs_filename TEXT,
+                      sheet_id TEXT,
+                      tab_name TEXT)''')
         conn.commit()
 
 def save_verification(buyer_name, project_name, unit_number, status, report_text):
@@ -103,4 +118,70 @@ def get_sheet_audit_by_id(record_id: int) -> dict:
         cols = [d[0] for d in cursor.description]
     record = dict(zip(cols, row))
     record["per_field_json"] = json.loads(record.get("per_field_json") or "[]")
+    return record
+
+
+# ── Full verification table ───────────────────────────────────────────────────
+
+def _serialise_fields(fields) -> str:
+    per_field = []
+    for f in fields:
+        if isinstance(f, dict):
+            per_field.append(f)
+        else:
+            per_field.append({
+                "field_name": f.field_name,
+                "status": f.status,
+                "afs_distinct_values": f.afs_distinct_values,
+                "sheet_raw": f.sheet_raw,
+                "afs_normalized": f.afs_normalized,
+                "sheet_normalized": f.sheet_normalized,
+                "detail": f.detail,
+            })
+    return json.dumps(per_field)
+
+
+def save_full_verification(
+    unit_no, buyer_name, project_name, afs_date,
+    kyc_status, sheet_verdict, overall_verdict,
+    kyc_report_text, sheet_fields, afs_filename,
+    sheet_id, tab_name,
+):
+    date_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.execute(
+            "INSERT INTO full_verifications "
+            "(date, unit_no, buyer_name, project_name, afs_date, kyc_status, "
+            "sheet_verdict, overall_verdict, kyc_report_text, sheet_per_field_json, "
+            "afs_filename, sheet_id, tab_name) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (date_str, unit_no, buyer_name, project_name, afs_date,
+             kyc_status, sheet_verdict, overall_verdict, kyc_report_text,
+             _serialise_fields(sheet_fields), afs_filename, sheet_id, tab_name),
+        )
+        conn.commit()
+
+
+def get_all_full_verifications_df():
+    with sqlite3.connect(DB_FILE) as conn:
+        df = pd.read_sql_query(
+            "SELECT id, date, unit_no, buyer_name, project_name, "
+            "kyc_status, sheet_verdict, overall_verdict "
+            "FROM full_verifications ORDER BY id DESC",
+            conn,
+        )
+    return df
+
+
+def get_full_verification_by_id(record_id: int) -> dict:
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.execute(
+            "SELECT * FROM full_verifications WHERE id=?", (record_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return {}
+        cols = [d[0] for d in cursor.description]
+    record = dict(zip(cols, row))
+    record["sheet_per_field_json"] = json.loads(record.get("sheet_per_field_json") or "[]")
     return record

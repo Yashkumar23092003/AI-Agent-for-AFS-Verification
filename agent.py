@@ -133,10 +133,20 @@ def _extract_afs_text(afs_bytes: bytes, afs_filename: str = "afs_document.pdf") 
     return afs_text, afs_truncated
 
 
-def verify_documents(afs_bytes: bytes, afs_mime: str, aadhaar_list: list, pan_list: list, afs_filename: str = "afs_document.pdf"):
+def verify_documents(
+    afs_bytes: bytes,
+    afs_mime: str,
+    aadhaar_list: list,
+    pan_list: list,
+    afs_filename: str = "afs_document.pdf",
+    _afs_preextracted: tuple = None,
+):
     """
     Passes the documents to OpenAI (gpt-4o) to perform the KYC cross-verification
     based strictly on the system prompt rules.
+
+    _afs_preextracted: optional (afs_text, afs_truncated) tuple from a prior
+    _extract_afs_text() call — avoids re-extracting when running the full pipeline.
     """
     # Validate file sizes before processing
     validate_file_sizes(afs_bytes, aadhaar_list, pan_list)
@@ -158,7 +168,10 @@ def verify_documents(afs_bytes: bytes, afs_mime: str, aadhaar_list: list, pan_li
         print(f"Warning: Could not read system_prompt.md: {e}")
         system_instruction = "You are a KYC Verification Agent. Verify that AFS matches KYC documents exactly."
 
-    afs_text, afs_truncated = _extract_afs_text(afs_bytes, afs_filename)
+    if _afs_preextracted is not None:
+        afs_text, afs_truncated = _afs_preextracted
+    else:
+        afs_text, afs_truncated = _extract_afs_text(afs_bytes, afs_filename)
 
     truncation_note = ""
     if afs_truncated:
@@ -470,6 +483,7 @@ def verify_afs_against_sheet(
     sheet_id: str,
     tab: str,
     use_fixture: bool = False,
+    _afs_preextracted: tuple = None,
 ) -> dict:
     """
     Full pipeline: extract fields from AFS -> fetch Google Sheet row -> compare.
@@ -486,7 +500,10 @@ def verify_afs_against_sheet(
     from sheets import get_worksheet, find_unit_row
 
     prompt_configured = not _sheet_prompt_is_placeholder()
-    afs_text, _ = _extract_afs_text(afs_bytes, afs_filename)
+    if _afs_preextracted is not None:
+        afs_text, _ = _afs_preextracted
+    else:
+        afs_text, _ = _extract_afs_text(afs_bytes, afs_filename)
 
     if use_fixture or not prompt_configured:
         # ── Fixture path ────────────────────────────────────────────────────
@@ -537,4 +554,84 @@ def verify_afs_against_sheet(
         "afs_meta": afs_meta,
         "used_fixture": used_fixture,
         "prompt_configured": prompt_configured,
+    }
+
+
+# ── Full end-to-end pipeline (KYC + Sheet audit in one call) ──────────────────
+
+def verify_full_verification(
+    afs_bytes: bytes,
+    afs_filename: str,
+    afs_mime: str,
+    aadhaar_list: list,
+    pan_list: list,
+    sheet_id: str,
+    tab_name: str,
+    use_fixture: bool = False,
+) -> dict:
+    """
+    Full pipeline: KYC cross-verification AND AFS ↔ Sheet audit in a single call.
+
+    AFS text is extracted once and shared between both sub-checks — accuracy is
+    identical to running them separately because both LLM calls are kept independent.
+
+    Returns a combined result dict:
+      overall_verdict  – "PASS" only if BOTH kyc_status == MATCH AND sheet_verdict == PASS
+      kyc_status       – "MATCH" or "MISMATCH"
+      kyc_report_text  – full KYC markdown report
+      kyc_json         – extracted metadata (buyer_name, project_name, unit_number, afs_date)
+      sheet_verdict    – "PASS" or "FAIL"
+      sheet_fields     – list of FieldResult
+      sheet_warnings   – list of warning strings
+      sheet_schema_caveats – list of caveat strings
+      sheet_afs_meta   – dict from sheet extraction (buyer_name, project_name, afs_date)
+      extraction       – raw extraction contract dict
+      used_fixture     – bool
+    """
+    if len(afs_bytes) > MAX_FILE_SIZE_BYTES:
+        raise ValueError(
+            f"AFS file is too large ({len(afs_bytes) / (1024*1024):.1f} MB). "
+            f"Maximum allowed is {MAX_FILE_SIZE_BYTES / (1024*1024):.0f} MB."
+        )
+
+    # Extract AFS text exactly once — shared by both sub-checks
+    pre = _extract_afs_text(afs_bytes, afs_filename)
+
+    # Step 1: KYC cross-verification (Aadhaar + PAN + AFS)
+    kyc_report_text, kyc_json = verify_documents(
+        afs_bytes=afs_bytes,
+        afs_mime=afs_mime,
+        aadhaar_list=aadhaar_list,
+        pan_list=pan_list,
+        afs_filename=afs_filename,
+        _afs_preextracted=pre,
+    )
+
+    # Step 2: AFS ↔ Sheet audit
+    sheet_result = verify_afs_against_sheet(
+        afs_bytes=afs_bytes,
+        afs_filename=afs_filename,
+        sheet_id=sheet_id,
+        tab=tab_name,
+        use_fixture=use_fixture,
+        _afs_preextracted=pre,
+    )
+
+    kyc_pass = kyc_json.get("status") == "MATCH"
+    sheet_pass = sheet_result.get("verdict") == "PASS"
+    overall_verdict = "PASS" if (kyc_pass and sheet_pass) else "FAIL"
+
+    return {
+        "overall_verdict": overall_verdict,
+        "kyc_status": kyc_json.get("status", "MISMATCH"),
+        "kyc_report_text": kyc_report_text,
+        "kyc_json": kyc_json,
+        "sheet_verdict": sheet_result.get("verdict", "FAIL"),
+        "sheet_fields": sheet_result.get("fields", []),
+        "sheet_warnings": sheet_result.get("warnings", []),
+        "sheet_schema_caveats": sheet_result.get("schema_caveats", []),
+        "sheet_afs_meta": sheet_result.get("afs_meta", {}),
+        "extraction": sheet_result.get("extraction", {}),
+        "used_fixture": sheet_result.get("used_fixture", False),
+        "prompt_configured": sheet_result.get("prompt_configured", False),
     }

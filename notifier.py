@@ -365,6 +365,162 @@ def _build_sheet_audit_html(buyer_name, unit_no, project_name, verdict, fields, 
 </html>"""
 
 
+def generate_full_verification_email(
+    crm_email, buyer_name, unit_no, project_name, afs_date,
+    overall_verdict, kyc_status, sheet_verdict,
+    kyc_report_text, sheet_fields, sheet_warnings,
+):
+    """
+    Sends a combined KYC + Sheet audit email for the full verification flow.
+    Includes an overall verdict banner, KYC narrative, and sheet field table.
+    """
+    overall_label = "PASS" if overall_verdict == "PASS" else "FAIL"
+    kyc_label = "MATCH" if kyc_status == "MATCH" else "MISMATCH"
+    sheet_label = sheet_verdict
+
+    if overall_verdict == "PASS":
+        ov_color, ov_bg, ov_border = "#10b981", "#ecfdf5", "#a7f3d0"
+        ov_text = "OVERALL: PASS - KYC VERIFIED + SHEET MATCHES"
+    else:
+        ov_color, ov_bg, ov_border = "#ef4444", "#fef2f2", "#fca5a5"
+        ov_text = "OVERALL: FAIL - ONE OR MORE CHECKS FAILED"
+
+    kyc_badge_color = "#10b981" if kyc_status == "MATCH" else "#ef4444"
+    kyc_badge_bg    = "#ecfdf5" if kyc_status == "MATCH" else "#fef2f2"
+    sheet_badge_color = "#10b981" if sheet_verdict == "PASS" else "#ef4444"
+    sheet_badge_bg    = "#ecfdf5" if sheet_verdict == "PASS" else "#fef2f2"
+
+    kyc_html = markdown.markdown(kyc_report_text, extensions=["tables"])
+    kyc_html = kyc_html.replace(
+        "<td>✅</td>",
+        '<td><span style="background:#d1fae5;color:#065f46;padding:3px 8px;border-radius:9999px;font-size:11px;">MATCH</span></td>',
+    ).replace(
+        "<td>❌</td>",
+        '<td><span style="background:#fee2e2;color:#991b1b;padding:3px 8px;border-radius:9999px;font-size:11px;">MISMATCH</span></td>',
+    )
+
+    # Normalise sheet fields to dicts
+    fields_dicts = []
+    for f in sheet_fields:
+        if isinstance(f, dict):
+            fields_dicts.append(f)
+        else:
+            fields_dicts.append({
+                "field_name": f.field_name, "status": f.status,
+                "afs_distinct_values": f.afs_distinct_values,
+                "sheet_raw": f.sheet_raw, "afs_normalized": f.afs_normalized,
+                "sheet_normalized": f.sheet_normalized, "detail": f.detail,
+            })
+
+    sheet_rows_html = ""
+    for f in fields_dicts:
+        if f["status"] == "MATCH":
+            badge = '<span style="background:#d1fae5;color:#065f46;padding:3px 8px;border-radius:9999px;font-size:11px;font-weight:600;">MATCH</span>'
+        elif f["status"] == "SCHEMA_CAVEAT":
+            badge = '<span style="background:#fef3c7;color:#92400e;padding:3px 8px;border-radius:9999px;font-size:11px;font-weight:600;">CAVEAT</span>'
+        else:
+            badge = f'<span style="background:#fee2e2;color:#991b1b;padding:3px 8px;border-radius:9999px;font-size:11px;font-weight:600;">{f["status"]}</span>'
+        afs_val = f.get("afs_normalized") or " | ".join(str(v) for v in f.get("afs_distinct_values", []))
+        sheet_val = f.get("sheet_normalized") or f.get("sheet_raw") or "—"
+        sheet_rows_html += f"""
+        <tr>
+          <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;">{badge}</td>
+          <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;font-weight:600;">{f["field_name"]}</td>
+          <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;font-family:monospace;">{afs_val}</td>
+          <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;font-family:monospace;">{sheet_val}</td>
+          <td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;font-size:12px;color:#64748b;">{f.get("detail") or ""}</td>
+        </tr>"""
+
+    warnings_html = ""
+    if sheet_warnings:
+        items = "".join(f"<li>{w}</li>" for w in sheet_warnings)
+        warnings_html = f'<p style="color:#92400e;background:#fef3c7;padding:10px;border-radius:6px;font-size:13px;"><strong>Warnings:</strong><ul>{items}</ul></p>'
+
+    html_body = f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Full Verification Report</title>
+<style>
+body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:#334155;background:#f8fafc;margin:0;padding:20px;}}
+.wrap{{max-width:820px;margin:0 auto;background:#fff;border-radius:12px;box-shadow:0 4px 12px rgba(0,0,0,.08);border:1px solid #e2e8f0;overflow:hidden;}}
+table{{width:100%;border-collapse:collapse;margin:16px 0;font-size:13px;}}
+th{{background:#f1f5f9;color:#475569;font-weight:600;text-align:left;padding:10px 12px;border-bottom:2px solid #e2e8f0;}}
+td{{padding:10px 12px;border-bottom:1px solid #e2e8f0;color:#334155;}}
+tr:nth-child(even){{background:#f8fafc;}}
+h2{{font-size:16px;color:#1e293b;border-bottom:2px solid #f1f5f9;padding-bottom:6px;margin-top:24px;}}
+h3{{font-size:14px;color:#1e293b;margin-top:16px;}}
+p,li{{line-height:1.6;font-size:14px;}}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div style="background:linear-gradient(135deg,#1e293b,#0f172a);color:#fff;padding:24px;text-align:center;">
+      <h1 style="margin:0;font-size:20px;font-weight:700;">Full Real Estate Verification Report</h1>
+    </div>
+    <div style="padding:24px;">
+
+      <div style="padding:14px;border-radius:8px;margin-bottom:20px;font-weight:700;font-size:15px;text-align:center;
+                  background:{ov_bg};color:{ov_color};border:1px solid {ov_border};">
+        {ov_text}
+      </div>
+
+      <div style="display:flex;gap:12px;margin-bottom:20px;">
+        <div style="flex:1;padding:12px;border-radius:8px;text-align:center;background:{kyc_badge_bg};color:{kyc_badge_color};border:1px solid {kyc_badge_color};font-weight:700;">
+          Part 1 - KYC: {kyc_label}
+        </div>
+        <div style="flex:1;padding:12px;border-radius:8px;text-align:center;background:{sheet_badge_bg};color:{sheet_badge_color};border:1px solid {sheet_badge_color};font-weight:700;">
+          Part 2 - Sheet Audit: {sheet_label}
+        </div>
+      </div>
+
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px;margin-bottom:20px;font-size:14px;">
+        <strong>Buyer:</strong> {buyer_name} &nbsp;|&nbsp;
+        <strong>Unit:</strong> {unit_no} &nbsp;|&nbsp;
+        <strong>Project:</strong> {project_name} &nbsp;|&nbsp;
+        <strong>AFS Date:</strong> {afs_date}
+      </div>
+
+      <h2>Part 1: KYC Identity Verification</h2>
+      {kyc_html}
+
+      <h2>Part 2: AFS vs Google Sheet Audit</h2>
+      {warnings_html}
+      <table>
+        <thead>
+          <tr>
+            <th>Status</th><th>Field</th><th>AFS Value</th><th>Sheet Value</th><th>Notes</th>
+          </tr>
+        </thead>
+        <tbody>{sheet_rows_html}</tbody>
+      </table>
+
+    </div>
+    <div style="background:#f8fafc;padding:14px;text-align:center;font-size:11px;color:#64748b;border-top:1px solid #e2e8f0;">
+      Auto-generated by KYC Verification Agent. Do not reply to this email.
+    </div>
+  </div>
+</body>
+</html>"""
+
+    plain_body = (
+        f"Full Verification Result\n\n"
+        f"Buyer:      {buyer_name}\n"
+        f"Unit:       {unit_no}\n"
+        f"Project:    {project_name}\n"
+        f"AFS Date:   {afs_date}\n\n"
+        f"Overall:    {overall_label}\n"
+        f"KYC Status: {kyc_label}\n"
+        f"Sheet Audit:{sheet_label}\n\n"
+        "Please view this email in an HTML-capable client for the full report.\n\n"
+        "Regards,\nKYC Verification Agent"
+    )
+
+    verdict_icon = "PASS" if overall_verdict == "PASS" else "FAIL"
+    subject = (
+        f"Full Verification {verdict_icon} | {buyer_name} | Unit {unit_no} | {project_name}"
+    )
+    return send_verification_email(crm_email, subject, html_body, plain_body)
+
+
 def generate_sheet_audit_email(crm_email, buyer_name, unit_no, project_name,
                                 verdict, fields, warnings):
     """

@@ -379,24 +379,12 @@ def _render_table(pdf: FPDF, rows: list[list[str]]):
             pdf.set_y(y0 + row_h)
 
 
-# ── Main generator ───────────────────────────────────────────────────────────
-def generate_pdf_report(
-    report_markdown: str,
-    buyer_name: str = "Unknown",
-    json_data: dict = None,
-) -> bytes:
-    if json_data is None:
-        json_data = {}
-
-    pdf = KYCReportPDF(json_data=json_data)
-    pdf.alias_nb_pages()
-
-    _draw_cover(pdf, buyer_name, json_data)
-
-    pdf.add_page()
-    pdf.set_left_margin(12)
-    pdf.set_right_margin(12)
-
+# ── KYC body renderer (shared between single and combined PDF) ────────────────
+def _render_kyc_body(pdf: FPDF, report_markdown: str):
+    """
+    Renders KYC markdown report content into an existing FPDF object.
+    Caller must have already called pdf.add_page() and set margins.
+    """
     lines = report_markdown.split("\n")
     i = 0
 
@@ -588,51 +576,42 @@ def generate_pdf_report(
 
         i += 1
 
+
+# ── Main KYC PDF generator ────────────────────────────────────────────────────
+def generate_pdf_report(
+    report_markdown: str,
+    buyer_name: str = "Unknown",
+    json_data: dict = None,
+) -> bytes:
+    if json_data is None:
+        json_data = {}
+
+    pdf = KYCReportPDF(json_data=json_data)
+    pdf.alias_nb_pages()
+    _draw_cover(pdf, buyer_name, json_data)
+    pdf.add_page()
+    pdf.set_left_margin(12)
+    pdf.set_right_margin(12)
+    _render_kyc_body(pdf, report_markdown)
+
     buf = io.BytesIO()
     pdf.output(buf)
     buf.seek(0)
     return buf.getvalue()
 
 
-# ── Sheet audit PDF ───────────────────────────────────────────────────────────
-
-def generate_sheet_audit_pdf(result: dict) -> bytes:
+# ── Sheet audit body renderer (shared between single and combined PDF) ─────────
+def _render_sheet_audit_body(
+    pdf: FPDF,
+    verdict: str,
+    fields,
+    warnings: list,
+    schema_caveats: list,
+):
     """
-    Generates a branded PDF for an AFS ↔ Sheet audit result.
-
-    'result' is the dict returned by agent.verify_afs_against_sheet().
+    Renders the sheet audit field table into an existing FPDF object.
+    Caller must have already called pdf.add_page() and set margins.
     """
-    afs_meta = result.get("afs_meta", {})
-    verdict = result.get("verdict", "FAIL")
-    fields = result.get("fields", [])
-    warnings = result.get("warnings", [])
-    schema_caveats = result.get("schema_caveats", [])
-    extraction = result.get("extraction", {})
-
-    unit_no = (
-        extraction.get("unit_number", {}).get("distinct_values", [""])[0]
-        if extraction else ""
-    )
-
-    # Build a json_data shape compatible with _draw_cover
-    cover_data = {
-        "buyer_name": afs_meta.get("buyer_name", ""),
-        "project_name": afs_meta.get("project_name", ""),
-        "unit_number": unit_no,
-        "afs_date": afs_meta.get("afs_date", ""),
-        "status": "MATCH" if verdict == "PASS" else "MISMATCH",
-    }
-
-    pdf = KYCReportPDF(json_data=cover_data)
-    pdf.alias_nb_pages()
-
-    _draw_cover(pdf, afs_meta.get("buyer_name", ""), cover_data)
-
-    # ── Results page ──
-    pdf.add_page()
-    pdf.set_left_margin(12)
-    pdf.set_right_margin(12)
-
     # Section heading
     y_now = pdf.get_y()
     pdf.set_fill_color(*SECTION_BG)
@@ -665,7 +644,6 @@ def generate_sheet_audit_pdf(result: dict) -> bytes:
     pdf.set_draw_color(*RULE_CLR)
 
     # Field table
-    # Columns: Status | Field | AFS Raw | Sheet Raw | AFS Norm | Sheet Norm | Detail
     col_w = [20, 28, 38, 28, 22, 22, 50]
     headers = ["Status", "Field", "AFS Raw Value(s)", "Sheet Raw", "AFS Norm.", "Sheet Norm.", "Notes"]
     line_h = 5.5
@@ -685,7 +663,6 @@ def generate_sheet_audit_pdf(result: dict) -> bytes:
 
     # Data rows
     for row_idx, f in enumerate(fields):
-        # Coerce to dict (works for both FieldResult dataclass and plain dict)
         if not isinstance(f, dict):
             fd = {
                 "field_name": f.field_name, "status": f.status,
@@ -713,7 +690,6 @@ def generate_sheet_audit_pdf(result: dict) -> bytes:
             _clean(str(fd.get("detail") or "")),
         ]
 
-        # Estimate row height
         max_lines = 1
         for j, ct in enumerate(cells):
             avg_w = pdf.get_string_width("A") or 1.8
@@ -756,6 +732,139 @@ def generate_sheet_audit_pdf(result: dict) -> bytes:
             pdf.set_text_color(*GREY_TXT)
             pdf.multi_cell(186, 5, f"[NOTE] {_clean(note)}", new_x="LMARGIN", new_y="NEXT")
             pdf.ln(1)
+
+
+# ── Sheet audit PDF ───────────────────────────────────────────────────────────
+
+def generate_sheet_audit_pdf(result: dict) -> bytes:
+    """
+    Generates a branded PDF for an AFS ↔ Sheet audit result.
+
+    'result' is the dict returned by agent.verify_afs_against_sheet().
+    """
+    afs_meta = result.get("afs_meta", {})
+    verdict = result.get("verdict", "FAIL")
+    fields = result.get("fields", [])
+    warnings = result.get("warnings", [])
+    schema_caveats = result.get("schema_caveats", [])
+    extraction = result.get("extraction", {})
+
+    unit_no = (
+        extraction.get("unit_number", {}).get("distinct_values", [""])[0]
+        if extraction else ""
+    )
+
+    # Build a json_data shape compatible with _draw_cover
+    cover_data = {
+        "buyer_name": afs_meta.get("buyer_name", ""),
+        "project_name": afs_meta.get("project_name", ""),
+        "unit_number": unit_no,
+        "afs_date": afs_meta.get("afs_date", ""),
+        "status": "MATCH" if verdict == "PASS" else "MISMATCH",
+    }
+
+    pdf = KYCReportPDF(json_data=cover_data)
+    pdf.alias_nb_pages()
+    _draw_cover(pdf, afs_meta.get("buyer_name", ""), cover_data)
+    pdf.add_page()
+    pdf.set_left_margin(12)
+    pdf.set_right_margin(12)
+    _render_sheet_audit_body(pdf, verdict, fields, warnings, schema_caveats)
+
+    buf = io.BytesIO()
+    pdf.output(buf)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+# ── Combined full-verification PDF ─────────────────────────────────────────────
+
+def generate_full_verification_pdf(result: dict) -> bytes:
+    """
+    Generates a combined PDF for the full verification flow.
+    Section 1: KYC identity verification (markdown report).
+    Section 2: AFS vs Google Sheet field audit (field table).
+    """
+    kyc_json = result.get("kyc_json", {})
+    overall = result.get("overall_verdict", "FAIL")
+    kyc_status = result.get("kyc_status", "MISMATCH")
+    sheet_verdict = result.get("sheet_verdict", "FAIL")
+    extraction = result.get("extraction", {})
+
+    buyer_name = kyc_json.get("buyer_name", "")
+    unit_no = kyc_json.get("unit_number") or (
+        extraction.get("unit_number", {}).get("distinct_values", [""])[0]
+    )
+
+    cover_data = {
+        "buyer_name": buyer_name,
+        "project_name": kyc_json.get("project_name", ""),
+        "unit_number": unit_no,
+        "afs_date": kyc_json.get("afs_date", ""),
+        "status": "MATCH" if overall == "PASS" else "MISMATCH",
+    }
+
+    pdf = KYCReportPDF(json_data=cover_data)
+    pdf.alias_nb_pages()
+    _draw_cover(pdf, buyer_name, cover_data)
+
+    # ── Part 1: KYC ───────────────────────────────────────────────────────────
+    pdf.add_page()
+    pdf.set_left_margin(12)
+    pdf.set_right_margin(12)
+
+    # Part banner
+    p1_bg = MATCH_BG if kyc_status == "MATCH" else MISMATCH_BG
+    p1_fg = MATCH_FG if kyc_status == "MATCH" else MISMATCH_FG
+    p1_txt = f"PART 1: KYC Identity Verification  [{kyc_status}]"
+    bx, by = pdf.get_x(), pdf.get_y()
+    pdf.set_fill_color(*p1_bg)
+    pdf.set_draw_color(*p1_fg)
+    pdf.set_line_width(0.6)
+    pdf.rect(bx, by, 186, 10, "FD")
+    pdf.set_fill_color(*p1_fg)
+    pdf.rect(bx, by, 4, 10, "F")
+    pdf.set_line_width(0.2)
+    pdf.set_xy(bx + 8, by)
+    pdf.set_font("Helvetica", "B", 10)
+    pdf.set_text_color(*p1_fg)
+    pdf.cell(178, 10, _clean(p1_txt), new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(4)
+    pdf.set_draw_color(*RULE_CLR)
+
+    _render_kyc_body(pdf, result.get("kyc_report_text", ""))
+
+    # ── Part 2: Sheet audit ───────────────────────────────────────────────────
+    pdf.add_page()
+    pdf.set_left_margin(12)
+    pdf.set_right_margin(12)
+
+    # Part banner
+    p2_bg = MATCH_BG if sheet_verdict == "PASS" else MISMATCH_BG
+    p2_fg = MATCH_FG if sheet_verdict == "PASS" else MISMATCH_FG
+    p2_txt = f"PART 2: AFS vs Google Sheet Audit  [{sheet_verdict}]"
+    bx, by = pdf.get_x(), pdf.get_y()
+    pdf.set_fill_color(*p2_bg)
+    pdf.set_draw_color(*p2_fg)
+    pdf.set_line_width(0.6)
+    pdf.rect(bx, by, 186, 10, "FD")
+    pdf.set_fill_color(*p2_fg)
+    pdf.rect(bx, by, 4, 10, "F")
+    pdf.set_line_width(0.2)
+    pdf.set_xy(bx + 8, by)
+    pdf.set_font("Helvetica", "B", 10)
+    pdf.set_text_color(*p2_fg)
+    pdf.cell(178, 10, _clean(p2_txt), new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(4)
+    pdf.set_draw_color(*RULE_CLR)
+
+    _render_sheet_audit_body(
+        pdf,
+        sheet_verdict,
+        result.get("sheet_fields", []),
+        result.get("sheet_warnings", []),
+        result.get("sheet_schema_caveats", []),
+    )
 
     buf = io.BytesIO()
     pdf.output(buf)
