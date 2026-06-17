@@ -1,128 +1,117 @@
-import sqlite3
-import datetime
-import json
-import pandas as pd
+"""
+database.py — persistence layer.
 
-DB_FILE = 'kyc_history.db'
+Works on BOTH:
+  • SQLite (local dev)          — default, file kyc_history.db
+  • PostgreSQL (cloud / Neon)   — when DATABASE_URL env var is set
+
+The public function signatures and return types are identical across both
+backends, so no other module needs to change.
+"""
+import os
+import json
+import datetime
+import pandas as pd
+from sqlalchemy import (
+    create_engine, MetaData, Table, Column, Integer, Text, insert, select, text,
+)
+
+# ── Engine selection ───────────────────────────────────────────────────────────
+# Local default = SQLite file. In the cloud set DATABASE_URL to your Neon Postgres URL.
+DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///kyc_history.db")
+
+# Neon/Heroku hand out "postgres://…"; SQLAlchemy wants "postgresql://…".
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+_connect_args = {}
+if DATABASE_URL.startswith("sqlite"):
+    # Allow use across Streamlit's threads
+    _connect_args = {"check_same_thread": False}
+
+engine = create_engine(DATABASE_URL, pool_pre_ping=True, connect_args=_connect_args)
+metadata = MetaData()
+
+# ── Schema ──────────────────────────────────────────────────────────────────────
+verifications = Table(
+    "verifications", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("date", Text),
+    Column("buyer_name", Text),
+    Column("project_name", Text),
+    Column("unit_number", Text),
+    Column("status", Text),
+    Column("report_text", Text),
+)
+
+sheet_audits = Table(
+    "sheet_audits", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("date", Text),
+    Column("unit_no", Text),
+    Column("buyer_name", Text),
+    Column("project_name", Text),
+    Column("sheet_id", Text),
+    Column("tab_name", Text),
+    Column("verdict", Text),
+    Column("per_field_json", Text),
+    Column("afs_filename", Text),
+)
+
+full_verifications = Table(
+    "full_verifications", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("date", Text),
+    Column("unit_no", Text),
+    Column("buyer_name", Text),
+    Column("project_name", Text),
+    Column("afs_date", Text),
+    Column("kyc_status", Text),
+    Column("sheet_verdict", Text),
+    Column("overall_verdict", Text),
+    Column("kyc_report_text", Text),
+    Column("sheet_per_field_json", Text),
+    Column("afs_filename", Text),
+    Column("sheet_id", Text),
+    Column("tab_name", Text),
+)
+
 
 def init_db():
-    with sqlite3.connect(DB_FILE) as conn:
-        conn.execute('''CREATE TABLE IF NOT EXISTS verifications
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      date TEXT,
-                      buyer_name TEXT,
-                      project_name TEXT,
-                      unit_number TEXT,
-                      status TEXT,
-                      report_text TEXT)''')
-        conn.execute('''CREATE TABLE IF NOT EXISTS sheet_audits
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      date TEXT,
-                      unit_no TEXT,
-                      buyer_name TEXT,
-                      project_name TEXT,
-                      sheet_id TEXT,
-                      tab_name TEXT,
-                      verdict TEXT,
-                      per_field_json TEXT,
-                      afs_filename TEXT)''')
-        conn.execute('''CREATE TABLE IF NOT EXISTS full_verifications
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      date TEXT,
-                      unit_no TEXT,
-                      buyer_name TEXT,
-                      project_name TEXT,
-                      afs_date TEXT,
-                      kyc_status TEXT,
-                      sheet_verdict TEXT,
-                      overall_verdict TEXT,
-                      kyc_report_text TEXT,
-                      sheet_per_field_json TEXT,
-                      afs_filename TEXT,
-                      sheet_id TEXT,
-                      tab_name TEXT)''')
-        conn.commit()
+    """Creates all tables if they don't exist (works on SQLite and Postgres)."""
+    metadata.create_all(engine)
 
+
+def _now() -> str:
+    return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+# ── verifications (KYC-only) ─────────────────────────────────────────────────────
 def save_verification(buyer_name, project_name, unit_number, status, report_text):
-    date_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with sqlite3.connect(DB_FILE) as conn:
-        conn.execute("INSERT INTO verifications (date, buyer_name, project_name, unit_number, status, report_text) VALUES (?, ?, ?, ?, ?, ?)",
-                  (date_str, buyer_name, project_name, unit_number, status, report_text))
-        conn.commit()
+    with engine.begin() as conn:
+        conn.execute(insert(verifications).values(
+            date=_now(), buyer_name=buyer_name, project_name=project_name,
+            unit_number=unit_number, status=status, report_text=report_text,
+        ))
+
 
 def get_all_verifications_df():
-    """Returns all verifications as a pandas DataFrame for easy display in Streamlit."""
-    with sqlite3.connect(DB_FILE) as conn:
-        query = "SELECT id, date, buyer_name, project_name, unit_number, status FROM verifications ORDER BY id DESC"
-        df = pd.read_sql_query(query, conn)
-    return df
+    stmt = select(
+        verifications.c.id, verifications.c.date, verifications.c.buyer_name,
+        verifications.c.project_name, verifications.c.unit_number, verifications.c.status,
+    ).order_by(verifications.c.id.desc())
+    with engine.connect() as conn:
+        return pd.read_sql_query(stmt, conn)
+
 
 def get_report_by_id(record_id):
-    """Fetches the full report text for a specific verification ID."""
-    with sqlite3.connect(DB_FILE) as conn:
-        cursor = conn.execute("SELECT report_text FROM verifications WHERE id=?", (record_id,))
-        row = cursor.fetchone()
+    stmt = select(verifications.c.report_text).where(verifications.c.id == record_id)
+    with engine.connect() as conn:
+        row = conn.execute(stmt).fetchone()
     return row[0] if row else "Report not found."
 
 
-# ── Sheet audit table ─────────────────────────────────────────────────────────
-
-def save_sheet_audit(unit_no, buyer_name, project_name, sheet_id, tab_name,
-                     verdict, fields, afs_filename):
-    """Serialises FieldResult list to JSON and saves the audit record."""
-    per_field = [
-        {
-            "field_name": f.field_name,
-            "status": f.status,
-            "afs_distinct_values": f.afs_distinct_values,
-            "sheet_raw": f.sheet_raw,
-            "afs_normalized": f.afs_normalized,
-            "sheet_normalized": f.sheet_normalized,
-            "detail": f.detail,
-        }
-        for f in fields
-    ]
-    date_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with sqlite3.connect(DB_FILE) as conn:
-        conn.execute(
-            "INSERT INTO sheet_audits "
-            "(date, unit_no, buyer_name, project_name, sheet_id, tab_name, "
-            "verdict, per_field_json, afs_filename) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (date_str, unit_no, buyer_name, project_name, sheet_id, tab_name,
-             verdict, json.dumps(per_field), afs_filename),
-        )
-        conn.commit()
-
-
-def get_all_sheet_audits_df():
-    """Returns all sheet audit records as a DataFrame (no per_field_json)."""
-    with sqlite3.connect(DB_FILE) as conn:
-        df = pd.read_sql_query(
-            "SELECT id, date, unit_no, buyer_name, project_name, verdict "
-            "FROM sheet_audits ORDER BY id DESC",
-            conn,
-        )
-    return df
-
-
-def get_sheet_audit_by_id(record_id: int) -> dict:
-    """Returns the full audit record including parsed per_field_json."""
-    with sqlite3.connect(DB_FILE) as conn:
-        cursor = conn.execute(
-            "SELECT * FROM sheet_audits WHERE id=?", (record_id,)
-        )
-        row = cursor.fetchone()
-        if not row:
-            return {}
-        cols = [d[0] for d in cursor.description]
-    record = dict(zip(cols, row))
-    record["per_field_json"] = json.loads(record.get("per_field_json") or "[]")
-    return record
-
-
-# ── Full verification table ───────────────────────────────────────────────────
-
+# ── shared field serialisation ───────────────────────────────────────────────────
 def _serialise_fields(fields) -> str:
     per_field = []
     for f in fields:
@@ -141,47 +130,73 @@ def _serialise_fields(fields) -> str:
     return json.dumps(per_field)
 
 
+# ── sheet_audits ──────────────────────────────────────────────────────────────────
+def save_sheet_audit(unit_no, buyer_name, project_name, sheet_id, tab_name,
+                     verdict, fields, afs_filename):
+    with engine.begin() as conn:
+        conn.execute(insert(sheet_audits).values(
+            date=_now(), unit_no=unit_no, buyer_name=buyer_name,
+            project_name=project_name, sheet_id=sheet_id, tab_name=tab_name,
+            verdict=verdict, per_field_json=_serialise_fields(fields),
+            afs_filename=afs_filename,
+        ))
+
+
+def get_all_sheet_audits_df():
+    stmt = select(
+        sheet_audits.c.id, sheet_audits.c.date, sheet_audits.c.unit_no,
+        sheet_audits.c.buyer_name, sheet_audits.c.project_name, sheet_audits.c.verdict,
+    ).order_by(sheet_audits.c.id.desc())
+    with engine.connect() as conn:
+        return pd.read_sql_query(stmt, conn)
+
+
+def get_sheet_audit_by_id(record_id: int) -> dict:
+    stmt = select(sheet_audits).where(sheet_audits.c.id == record_id)
+    with engine.connect() as conn:
+        row = conn.execute(stmt).mappings().fetchone()
+    if not row:
+        return {}
+    record = dict(row)
+    record["per_field_json"] = json.loads(record.get("per_field_json") or "[]")
+    return record
+
+
+# ── full_verifications ─────────────────────────────────────────────────────────────
 def save_full_verification(
     unit_no, buyer_name, project_name, afs_date,
     kyc_status, sheet_verdict, overall_verdict,
     kyc_report_text, sheet_fields, afs_filename,
     sheet_id, tab_name,
 ):
-    date_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with sqlite3.connect(DB_FILE) as conn:
-        conn.execute(
-            "INSERT INTO full_verifications "
-            "(date, unit_no, buyer_name, project_name, afs_date, kyc_status, "
-            "sheet_verdict, overall_verdict, kyc_report_text, sheet_per_field_json, "
-            "afs_filename, sheet_id, tab_name) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (date_str, unit_no, buyer_name, project_name, afs_date,
-             kyc_status, sheet_verdict, overall_verdict, kyc_report_text,
-             _serialise_fields(sheet_fields), afs_filename, sheet_id, tab_name),
-        )
-        conn.commit()
+    with engine.begin() as conn:
+        conn.execute(insert(full_verifications).values(
+            date=_now(), unit_no=unit_no, buyer_name=buyer_name,
+            project_name=project_name, afs_date=afs_date, kyc_status=kyc_status,
+            sheet_verdict=sheet_verdict, overall_verdict=overall_verdict,
+            kyc_report_text=kyc_report_text,
+            sheet_per_field_json=_serialise_fields(sheet_fields),
+            afs_filename=afs_filename, sheet_id=sheet_id, tab_name=tab_name,
+        ))
 
 
 def get_all_full_verifications_df():
-    with sqlite3.connect(DB_FILE) as conn:
-        df = pd.read_sql_query(
-            "SELECT id, date, unit_no, buyer_name, project_name, "
-            "kyc_status, sheet_verdict, overall_verdict "
-            "FROM full_verifications ORDER BY id DESC",
-            conn,
-        )
-    return df
+    stmt = select(
+        full_verifications.c.id, full_verifications.c.date, full_verifications.c.unit_no,
+        full_verifications.c.buyer_name, full_verifications.c.project_name,
+        full_verifications.c.kyc_status, full_verifications.c.sheet_verdict,
+        full_verifications.c.overall_verdict,
+    ).order_by(full_verifications.c.id.desc())
+    with engine.connect() as conn:
+        return pd.read_sql_query(stmt, conn)
 
 
 def get_full_verification_by_id(record_id: int) -> dict:
-    with sqlite3.connect(DB_FILE) as conn:
-        cursor = conn.execute(
-            "SELECT * FROM full_verifications WHERE id=?", (record_id,)
-        )
-        row = cursor.fetchone()
-        if not row:
-            return {}
-        cols = [d[0] for d in cursor.description]
-    record = dict(zip(cols, row))
+    stmt = select(full_verifications).where(full_verifications.c.id == record_id)
+    with engine.connect() as conn:
+        row = conn.execute(stmt).mappings().fetchone()
+    if not row:
+        return {}
+    record = dict(row)
     record["sheet_per_field_json"] = json.loads(record.get("sheet_per_field_json") or "[]")
     return record

@@ -3,6 +3,7 @@ sheets.py — Google Sheets integration for AFS <-> Sheet verification.
 Reads data using a service account. No LLM, no comparison logic.
 """
 import os
+import json
 import gspread
 from google.oauth2 import service_account
 from comparator import normalize_header
@@ -14,16 +15,34 @@ SCOPES = [
 
 
 def _get_credentials() -> service_account.Credentials:
+    """
+    Loads the Google service account credentials.
+
+    Resolution order (works both locally and in the cloud):
+      1. GOOGLE_SHEETS_CREDENTIALS_JSON  — the full JSON *content* as a string
+         (used on Streamlit Cloud / any host where you can't ship a file).
+      2. GOOGLE_SHEETS_CREDENTIALS_PATH  — path to a JSON file on disk (local dev).
+    """
+    raw_json = os.environ.get("GOOGLE_SHEETS_CREDENTIALS_JSON")
+    if raw_json and raw_json.strip():
+        try:
+            info = json.loads(raw_json)
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                "GOOGLE_SHEETS_CREDENTIALS_JSON is set but is not valid JSON. "
+                f"Parse error: {e}"
+            )
+        return service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
+
     creds_path = os.environ.get("GOOGLE_SHEETS_CREDENTIALS_PATH")
     if not creds_path:
         raise ValueError(
-            "GOOGLE_SHEETS_CREDENTIALS_PATH is not set in environment. "
-            "Set it to the path of your Google service account JSON file."
+            "No Google credentials configured. Set GOOGLE_SHEETS_CREDENTIALS_JSON "
+            "(the JSON content) in the cloud, or GOOGLE_SHEETS_CREDENTIALS_PATH "
+            "(a file path) locally."
         )
     if not os.path.isfile(creds_path):
-        raise FileNotFoundError(
-            f"Service account file not found: {creds_path}"
-        )
+        raise FileNotFoundError(f"Service account file not found: {creds_path}")
     return service_account.Credentials.from_service_account_file(
         creds_path, scopes=SCOPES
     )

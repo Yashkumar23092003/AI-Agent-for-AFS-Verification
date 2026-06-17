@@ -1,5 +1,12 @@
 # Environment & secrets
 .env
+.streamlit/secrets.toml
+
+# Google service account credentials (PRIVATE KEY — never commit)
+AFS_Verification_GS.json
+*-credentials.json
+service_account*.json
+gcp*.json
 
 # Python
 __pycache__/

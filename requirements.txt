@@ -10,5 +10,6 @@ pandas
 markdown
 gspread
 google-auth
+sqlalchemy
+psycopg2-binary
 pytest
-
