@@ -2,7 +2,9 @@
 .env
 .streamlit/secrets.toml
 streamlit_secrets_paste.txt
-
+streamlit_secrets_paste.txt
+requirements-dev.txt
+requirements.txt
 # Google service account credentials (PRIVATE KEY — never commit)
 AFS_Verification_GS.json
 *-credentials.json
