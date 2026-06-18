@@ -203,7 +203,7 @@ with tab_full:
                 sheet_fields=result["sheet_fields"],
                 sheet_warnings=result["sheet_warnings"],
             )
-            st.toast("📧 Email sent to CRM!" if email_ok else "⚠️ Email not sent — check SMTP in .env.")
+            st.toast("📧 Email sent to CRM!" if email_ok else "⚠️ Email not sent — check SMTP credentials.")
 
             pdf_bytes = generate_full_verification_pdf(result)
             st.download_button(
@@ -279,7 +279,7 @@ with tab_kyc:
                     json_data.get("mismatches_text", "Please review the attached report."),
                     report_text,
                 )
-            st.toast("📧 Email sent to CRM!" if email_ok else "⚠️ Email not sent — check SMTP in .env.")
+            st.toast("📧 Email sent to CRM!" if email_ok else "⚠️ Email not sent — check SMTP credentials.")
 
             pdf_bytes = generate_pdf_report(report_text, buyer_name, json_data=json_data)
             st.download_button(
@@ -384,7 +384,7 @@ with tab_sheet:
             email_ok = generate_sheet_audit_email(
                 crm_email, buyer_name, unit_no, project_name, verdict, fields, warnings,
             )
-            st.toast("📧 Audit email sent to CRM!" if email_ok else "⚠️ Email not sent — check SMTP in .env.")
+            st.toast("📧 Audit email sent to CRM!" if email_ok else "⚠️ Email not sent — check SMTP credentials.")
 
             pdf_bytes = generate_sheet_audit_pdf(result)
             st.download_button(

@@ -46,8 +46,10 @@ already been removed from git tracking and added to `.gitignore`.
 1. Create a new repository at <https://github.com/new> (set it **Private**).
 2. In the project folder, run:
    ```bash
+   pip install -r requirements-dev.txt
+   pytest
    git add .
-   git commit -m "Prepare for deployment: Postgres, cloud secrets, UI polish"
+   git commit -m "Prepare for deployment"
    git branch -M main
    git remote add origin https://github.com/<your-username>/<your-repo>.git
    git push -u origin main
@@ -57,7 +59,7 @@ already been removed from git tracking and added to `.gitignore`.
    - `.env` ❌ (must be absent)
    - `.streamlit/secrets.toml` ❌ (must be absent)
 
-   These should be present: `app.py`, `requirements.txt`, `.gitignore`,
+   These should be present: `app.py`, `requirements.txt`, `runtime.txt`, `.gitignore`,
    `.streamlit/secrets.toml.example`, `tests/fixtures/afs_313_extraction.json` ✅
 
 ---
@@ -137,4 +139,3 @@ secret, edit it in the Streamlit Cloud dashboard (Settings → Secrets) — no r
 - **Google "invalid_grant" / permission errors** → re-share the Sheet with the service
   account `client_email`, and confirm the JSON in secrets is the **new** rotated key.
 - **App sleeps / slow first load** → normal on the free tier; it wakes on visit.
-```

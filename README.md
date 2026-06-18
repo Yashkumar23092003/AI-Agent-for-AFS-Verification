@@ -106,6 +106,19 @@ Make sure you have Python 3.10+ installed on your machine.
    streamlit run app.py
    ```
 
+### Running Tests
+
+Install the development dependencies, then run the test suite:
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+### Deployment
+
+For production deployment, use the step-by-step Streamlit Cloud + Neon Postgres guide in `DEPLOYMENT.md`.
+
 ---
 
 ## 🔒 Security & Compliance

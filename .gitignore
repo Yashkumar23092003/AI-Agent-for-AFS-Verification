@@ -1,6 +1,7 @@
 # Environment & secrets
 .env
 .streamlit/secrets.toml
+streamlit_secrets_paste.txt
 
 # Google service account credentials (PRIVATE KEY — never commit)
 AFS_Verification_GS.json
@@ -15,6 +16,8 @@ __pycache__/
 
 # Database
 *.db
+*.sqlite
+*.sqlite3
 
 # Extracted documents (contain sensitive legal text)
 extracted_markdowns/

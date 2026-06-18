@@ -196,7 +196,7 @@ def build_html_report_email(buyer_name, project_name, unit_number, afs_date, sta
 def send_verification_email(to_email: str, subject: str, html_body: str, plain_body: str = ""):
     """
     Sends an email using standard SMTP, supporting both Plain Text and HTML.
-    Requires SMTP_EMAIL and SMTP_PASSWORD in .env.
+    Requires SMTP_EMAIL and SMTP_PASSWORD in the environment.
     """
     sender_email = os.environ.get("SMTP_EMAIL")
     sender_password = os.environ.get("SMTP_PASSWORD")
